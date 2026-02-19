@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment files (중요! API 키 포함)
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+.vite/
+
+# Claude settings
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Database (로컬 개발용)
+*.db
+*.sqlite
+*.sqlite3
+
+# Test files
+test_*.json
+*.test.json
+
+# Temporary
+temp_audio/
+*.tmp
+nul
+
+# API Keys (혹시 모를 파일들)
+*api*key*.txt
+credentials*.json

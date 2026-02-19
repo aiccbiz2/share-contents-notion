@@ -1,0 +1,28 @@
+# Credentials - DO NOT commit
+**/config.yaml
+
+# 002-1 has its own repo (aiccbiz2/youtube-notion-pipeline)
+002-1_Claude_CLI_Youtube/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.env
+
+# Node
+node_modules/
+package-lock.json
+
+# Logs
+*.log
+logs/
+
+# Temp
+temp/
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
