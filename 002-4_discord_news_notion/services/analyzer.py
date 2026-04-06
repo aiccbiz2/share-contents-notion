@@ -1,9 +1,9 @@
 """
 Claude CLI 기반 분석 + Notion 저장 모듈 (MCP 방식)
 - Claude CLI가 WebFetch로 URL을 직접 읽고 분석
+- Reddit URL은 별도 파이프라인으로 처리
 - --output-format stream-json으로 중간 과정 실시간 로그
 """
-import json
 import os
 import re
 import subprocess
@@ -16,10 +16,16 @@ from urllib.parse import urlparse
 from loguru import logger
 
 import config
+from utils.url_detector import is_reddit_url
+from services.reddit_fetcher import RedditFetcher
+from prompts.news_analysis import build_news_prompt
+from prompts.reddit_analysis import build_reddit_prompt
 
 # MCP 설정 파일 경로 (프로젝트 루트의 mcp_config.json)
 MCP_CONFIG_PATH = str(Path(__file__).parent.parent / "mcp_config.json")
-from prompts.news_analysis import build_news_prompt
+
+# 모듈 레벨 RedditFetcher 인스턴스
+reddit_fetcher = RedditFetcher()
 
 
 @dataclass
@@ -38,8 +44,12 @@ class NewsAnalyzer:
     ) -> AnalysisResult:
         """
         URL을 Claude CLI에 전달하여 직접 읽고 분석 후 Notion에 저장.
-        모든 URL에 뉴스 3관점 분석 적용. 최대 3회 재시도.
+        Reddit URL은 별도 파이프라인, 그 외는 뉴스 3관점 분석. 최대 3회 재시도.
         """
+        if is_reddit_url(url):
+            return self._analyze_reddit(url, shared_by)
+
+        # 기존 뉴스 파이프라인
         source = self._extract_source(url)
 
         prompt = build_news_prompt(
@@ -55,6 +65,35 @@ class NewsAnalyzer:
             f"프롬프트: {len(prompt)}자"
         )
 
+        return self._run_claude(url, prompt, "mcp__notion__*,WebFetch")
+
+    def _analyze_reddit(self, url: str, shared_by: str = "") -> AnalysisResult:
+        """Reddit URL 전용 분석 파이프라인"""
+        post = reddit_fetcher.fetch(url)
+        logger.info(
+            f"🔴 Reddit 게시물 추출 | {post.subreddit} | "
+            f"⬆️{post.score:,} · 💬{post.num_comments:,}"
+        )
+
+        prompt = build_reddit_prompt(
+            post=post,
+            database_id=config.NOTION_DATABASE_ID,
+            shared_by=shared_by,
+        )
+
+        allowed_tools = "mcp__notion__*"
+        if post.post_type == "link" and post.external_url:
+            allowed_tools = "mcp__notion__*,WebFetch"
+
+        logger.info(
+            f"🤖 Claude CLI Reddit 분석 준비 | "
+            f"프롬프트: {len(prompt)}자 | allowedTools: {allowed_tools}"
+        )
+
+        return self._run_claude(url, prompt, allowed_tools)
+
+    def _run_claude(self, url: str, prompt: str, allowed_tools: str) -> AnalysisResult:
+        """Claude CLI 실행 공통 로직 (최대 3회 재시도)"""
         last_error: Exception | None = None
         for attempt in range(1, 4):
             try:
@@ -74,7 +113,7 @@ class NewsAnalyzer:
                     [
                         config.CLAUDE_CLI_PATH,
                         "-p", prompt,
-                        "--allowedTools", "mcp__notion__*,WebFetch",
+                        "--allowedTools", allowed_tools,
                         "--mcp-config", MCP_CONFIG_PATH,
                     ],
                     stdout=subprocess.PIPE,
@@ -94,7 +133,7 @@ class NewsAnalyzer:
 
                 try:
                     result_text, stderr_output = proc.communicate()
-                except:
+                except Exception:
                     proc.kill()
                     result_text, stderr_output = proc.communicate()
                 finally:

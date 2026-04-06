@@ -17,7 +17,7 @@ from loguru import logger
 
 import config
 from services.analyzer import NewsAnalyzer
-from utils.url_detector import extract_urls, filter_valid_urls
+from utils.url_detector import extract_urls, filter_valid_urls, is_reddit_url
 
 # 서비스 인스턴스 (모듈 로딩 시 1회만 생성)
 analyzer = NewsAnalyzer()
@@ -26,6 +26,68 @@ analyzer = NewsAnalyzer()
 def register_events(client: discord.Client):
     """Discord 클라이언트에 이벤트 핸들러 등록"""
 
+    _scan_lock = asyncio.Lock()
+
+    async def scan_missed_messages():
+        """재연결 시 놓친 메시지 스캔 (슬립 복구 대응)"""
+        async with _scan_lock:
+            await client.wait_until_ready()
+
+            channel_ids = config.DISCORD_CHANNEL_IDS
+            if not channel_ids:
+                return
+
+            for channel_id in channel_ids:
+                channel = client.get_channel(channel_id)
+                if not channel:
+                    continue
+
+                enqueued = 0
+                try:
+                    async for message in channel.history(limit=50):
+                        if message.author.bot:
+                            continue
+                        # 봇이 이미 리액션한 메시지는 스킵 (✅, ❌, ⏳)
+                        already_processed = False
+                        for reaction in message.reactions:
+                            if reaction.me:
+                                already_processed = True
+                                break
+                        if already_processed:
+                            continue
+
+                        # 일반 + Forward 메시지 모두에서 URL 추출
+                        scan_sources = [message.content or ""]
+                        if hasattr(message, "message_snapshots") and message.message_snapshots:
+                            for snapshot in message.message_snapshots:
+                                if hasattr(snapshot, "content") and snapshot.content:
+                                    scan_sources.append(snapshot.content)
+                        for embed in message.embeds:
+                            if embed.url:
+                                scan_sources.append(embed.url)
+                            if embed.description:
+                                scan_sources.append(embed.description)
+
+                        all_urls = extract_urls(" ".join(scan_sources))
+                        if not all_urls:
+                            continue
+                        valid_urls = filter_valid_urls(all_urls)
+                        if not valid_urls:
+                            continue
+
+                        logger.info(f"[Scan] 놓친 URL 발견: {valid_urls} from {message.author}")
+
+                        # on_message 로직 재사용: 이벤트를 다시 디스패치
+                        await client.on_message(message)
+                        enqueued += 1
+
+                    if enqueued > 0:
+                        logger.info(f"[Scan] 놓친 메시지 {enqueued}건 처리 시작")
+                    else:
+                        logger.info("[Scan] 놓친 URL 없음")
+                except Exception as e:
+                    logger.error(f"[Scan] History scan error: {e}")
+
     @client.event
     async def on_ready():
         logger.info(f"봇 로그인 성공: {client.user} (ID: {client.user.id})")
@@ -33,6 +95,8 @@ def register_events(client: discord.Client):
             logger.info(f"감지 채널: {config.DISCORD_CHANNEL_IDS}")
         else:
             logger.info("감지 채널: 서버 전체")
+        # 재연결 시에도 놓친 메시지 스캔 (슬립 복구 대응)
+        client.loop.create_task(scan_missed_messages())
 
     @client.event
     async def on_message(message: discord.Message):
@@ -44,7 +108,22 @@ def register_events(client: discord.Client):
             return
 
         # ── URL 감지 (YouTube/Instagram 제외) ──────────────
-        all_urls = extract_urls(message.content)
+        # 일반 메시지 + Forward(전달) 메시지 모두에서 URL 추출
+        text_sources = [message.content]
+        # Forward된 메시지: message_snapshots에 원본 content가 들어있음
+        if hasattr(message, "message_snapshots") and message.message_snapshots:
+            for snapshot in message.message_snapshots:
+                if hasattr(snapshot, "content") and snapshot.content:
+                    text_sources.append(snapshot.content)
+        # embeds에 URL이 포함된 경우도 처리
+        for embed in message.embeds:
+            if embed.url:
+                text_sources.append(embed.url)
+            if embed.description:
+                text_sources.append(embed.description)
+
+        combined_text = " ".join(text_sources)
+        all_urls = extract_urls(combined_text)
         if not all_urls:
             return
 
@@ -78,8 +157,9 @@ def register_events(client: discord.Client):
                 logger.info(f"[{idx}/{total_urls}] 📌 파이프라인 시작: {url}")
 
                 # ── Step 1: Claude CLI로 URL 읽기 + 분석 + Notion 저장
+                url_emoji = "🔴" if is_reddit_url(url) else "📰"
                 await status_msg.edit(
-                    content=f"**[{idx}/{total_urls}]** 📰 `{short_url}`\n"
+                    content=f"**[{idx}/{total_urls}]** {url_emoji} `{short_url}`\n"
                     f"▸ Claude CLI 분석 + Notion 저장 중... (1~3분 소요)"
                 )
                 logger.info(f"[{idx}] Claude CLI 분석 + Notion 저장 중...")
@@ -155,8 +235,9 @@ def _friendly_error(e: Exception) -> str:
 
 def _build_reply(result, elapsed: float = 0) -> str:
     """디스코드 회신 메시지 포맷팅"""
+    emoji = "🔴" if is_reddit_url(result.url) else "📰"
     lines = [
-        f"## 📰 분석 완료",
+        f"## {emoji} 분석 완료",
         f"> ⏱ {elapsed:.0f}초 소요",
     ]
 

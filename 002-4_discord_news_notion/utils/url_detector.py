@@ -20,6 +20,9 @@ EXCLUDED_DOMAINS = {
     "instagram.com", "instagr.am",     # 002-3
 }
 
+# Reddit 도메인 (002-4에서 처리하되, 별도 파이프라인 사용)
+REDDIT_DOMAINS = {"reddit.com", "old.reddit.com", "new.reddit.com"}
+
 # 뉴스 도메인 (뉴스 3관점 분석 적용)
 NEWS_DOMAINS = {
     # 국내
@@ -66,6 +69,15 @@ def _is_excluded(domain: str) -> bool:
     """다른 봇이 처리하는 URL인지 확인"""
     for ed in EXCLUDED_DOMAINS:
         if domain == ed or domain.endswith("." + ed):
+            return True
+    return False
+
+
+def is_reddit_url(url: str) -> bool:
+    """Reddit URL 여부 판단"""
+    domain = get_domain(url)
+    for rd in REDDIT_DOMAINS:
+        if domain == rd or domain.endswith("." + rd):
             return True
     return False
 
